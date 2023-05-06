@@ -1,0 +1,161 @@
+import cv2
+import numpy as np
+import os
+
+# Global variables for mouse event handling
+drawing = False
+ix, iy = -1, -1
+fx, fy = -1, -1
+
+def draw_rectangle(event, x, y, flags, param):
+    global ix, iy, drawing, fx, fy
+
+    if event == cv2.EVENT_LBUTTONDOWN:
+        drawing = True
+        ix, iy = x, y
+
+    elif event == cv2.EVENT_MOUSEMOVE:
+        if drawing:
+            fx, fy = x, y
+
+    elif event == cv2.EVENT_LBUTTONUP:
+        drawing = False
+        fx, fy = x, y
+
+def adjust_bounding_box(image, x_min, y_min, x_max, y_max):
+    global ix, iy, drawing, fx, fy
+
+    # Resize the image based on the screen size while maintaining aspect ratio
+    screen_width, screen_height = 2560, 1080
+    img_height, img_width = image.shape[:2]
+    scale = min(screen_width / img_width, screen_height / img_height)
+    resized_image = cv2.resize(image, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+
+    # Create a copy of the resized image to draw the bounding box
+    img_copy = resized_image.copy()
+    cv2.rectangle(img_copy, (int(x_min * scale), int(y_min * scale)), (int(x_max * scale), int(y_max * scale)), (0, 255, 0), 2)
+
+    # Set up the mouse event handler
+    cv2.namedWindow("Adjust Bounding Box", cv2.WINDOW_NORMAL)
+    cv2.setMouseCallback("Adjust Bounding Box", draw_rectangle)
+
+    while True:
+        # Draw the updated bounding box on the image
+        if drawing:
+            img_temp = img_copy.copy()
+            cv2.rectangle(img_temp, (ix, iy), (fx, fy), (0, 255, 0), 2)
+        else:
+            img_temp = img_copy.copy()
+
+        # Display the image with the bounding box
+        cv2.imshow("Adjust Bounding Box", img_temp)
+
+        # Wait for a key press
+        key = cv2.waitKey(1) & 0xFF
+
+        # If 'r' is pressed, reset the bounding box
+        if key == ord("r"):
+            ix, iy = int(x_min * scale), int(y_min * scale)
+            fx, fy = int(x_max * scale), int(y_max * scale)
+            img_copy = resized_image.copy()
+            cv2.rectangle(img_copy, (ix, iy), (fx, fy), (0, 255, 0), 2)
+
+        # If 'c' is pressed, confirm the new bounding box and break the loop
+        if key == ord("c"):
+            x_min, y_min = min(ix, fx) / scale, min(iy, fy) / scale
+            x_max, y_max = max(ix, fx) / scale, max(iy, fy) / scale
+            break
+
+    # Close the window
+    cv2.destroyAllWindows()
+
+    return int(x_min), int(y_min), int(x_max), int(y_max)
+
+def add_watermark(image, text, position=(150, 150), font_scale=3, font_thickness=6, color=(170, 170, 170)):
+    # Load the font
+    font = cv2.FONT_HERSHEY_SIMPLEX
+
+    # Add the white border around the text
+    border_thickness = font_thickness + 10
+    border_color = (128, 128, 128)
+    cv2.putText(image, text, position, font, font_scale, border_color, border_thickness, cv2.LINE_AA)
+
+    # Add the watermark text to the image
+    cv2.putText(image, text, position, font, font_scale, color, font_thickness, cv2.LINE_AA)
+
+    return image
+
+
+def crop_image(image_path, output_path, min_area_ratio=0.001, expansion_ratio=0.05, watermark_text=None):
+
+    
+    # Load the image
+    image = cv2.imread(image_path)
+
+    # Convert the image to grayscale
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+    # Apply Otsu's thresholding to separate the white background from the actual content
+    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+
+    # Apply morphological operations
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel, iterations=1)
+    thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel, iterations=1)
+
+    # Find connected components in the thresholded image
+    num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(thresh, connectivity=8)
+
+    # Initialize cropping bounding box
+    height, width = image.shape[:2]
+    x_min, y_min, x_max, y_max = width, height, 0, 0
+
+    # Iterate through connected components
+    for i in range(1, num_labels):
+        x, y, w, h, area = stats[i]
+        img_area = width * height
+
+        # If the area of the connected component is above the minimum area ratio, update the bounding box
+        if area > img_area * min_area_ratio:
+            x_min = min(x_min, x)
+            y_min = min(y_min, y)
+            x_max = max(x_max, x + w)
+            y_max = max(y_max, y + h)
+
+    # Expand or contract the bounding box
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+
+    x_min = max(0, int(x_min - expansion_ratio * x_range))
+    y_min = max(0, int(y_min - expansion_ratio * y_range))
+    x_max = min(width, int(x_max + expansion_ratio * x_range))
+    y_max = min(height, int(y_max + expansion_ratio * y_range))
+
+    # Adjust the bounding box manually if needed
+    x_min, y_min, x_max, y_max = adjust_bounding_box(image, x_min, y_min, x_max, y_max)
+
+    # Crop the image using the bounding box
+    cropped_image = image[y_min:y_max, x_min:x_max]
+
+    # Save the cropped image
+    cv2.imwrite(output_path, cropped_image)
+
+    if watermark_text:
+        cropped_image = add_watermark(cropped_image, watermark_text)
+
+    # Save the cropped image
+    cv2.imwrite(output_path, cropped_image)
+
+# Set your input directory and output directory
+input_dir = r"C:\Users\saifu\Desktop\dukan\images\CANDLE JHOOMER IMAGES 25.2.23"
+output_dir = r"C:\Users\saifu\Desktop\dukan\images\CANDLE JHOOMER IMAGES 25.2.23\cropped"
+
+# Make sure the output directory exists
+os.makedirs(output_dir, exist_ok=True)
+
+# Process all images in the input directory
+for filename in os.listdir(input_dir):
+    if filename.endswith(".jpg") or filename.endswith(".png"):
+        input_path = os.path.join(input_dir, filename)
+        output_path = os.path.join(output_dir, filename)
+        crop_image(input_path, output_path, watermark_text="Saifee Light House, Dhule")
